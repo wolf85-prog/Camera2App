@@ -1,6 +1,7 @@
 package com.example.mycameraapp;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -42,6 +43,7 @@ import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
+import android.hardware.camera2.params.RggbChannelVector;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.AudioAttributes;
 import android.media.CamcorderProfile;
@@ -254,7 +256,7 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
-            openCamera();
+            openCamera(width, height);
         }
 
         @Override
@@ -478,16 +480,16 @@ public class MainActivity extends AppCompatActivity {
     }
 
 
-    public void openCamera() {
+    public void openCamera(int width, int height) {
         //start camera 1 (back)
         if (myCameras[CAMERA2].isOpen()) {myCameras[CAMERA2].closeCamera();}
         if (myCameras[CAMERA1] != null) {
             if (mCurrentSessionIsVideo) {
                 if (!myCameras[CAMERA1].isOpen())
-                    myCameras[CAMERA1].openVideoCamera(mTextureView.getWidth(), mTextureView.getHeight());
+                    myCameras[CAMERA1].openVideoCamera(width, height);
             } else {
                 if (!myCameras[CAMERA1].isOpen())
-                    myCameras[CAMERA1].openCamera(mTextureView.getWidth(), mTextureView.getHeight());
+                    myCameras[CAMERA1].openCamera(width, height);
             }
         }
         isPressed = true;
@@ -543,8 +545,6 @@ public class MainActivity extends AppCompatActivity {
                 return size;
             }
         }
-
-
 
         Log.e(LOG_TAG, "Couldn't find any suitable video size");
         return choices[choices.length - 1];
@@ -962,6 +962,9 @@ public class MainActivity extends AppCompatActivity {
 
         private void setUpCaptureRequestBuilder(CaptureRequest.Builder builder) {
             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+            if(fpsRange != null) {
+                builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
+            }
         }
 
         private void captureStillPicture() {
@@ -982,6 +985,9 @@ public class MainActivity extends AppCompatActivity {
 //                captureBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, (10000 - 100) / 2);
                 //setAutoFlash(captureBuilder);
 
+                if(fpsRange != null) {
+                    captureBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
+                }
                 // Используйте те же режимы AE и AF, что и при предварительном просмотре.
                 captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
                 captureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
@@ -1045,6 +1051,7 @@ public class MainActivity extends AppCompatActivity {
                 // Reset the auto-focus trigger
                 mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
                         CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
+
                 setAutoFlash(mPreviewRequestBuilder);
                 mCaptureSession.capture(mPreviewRequestBuilder.build(), mCaptureCallback,
                         mBackgroundHandler);
@@ -1068,9 +1075,9 @@ public class MainActivity extends AppCompatActivity {
                 if (!mCameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
                     throw new RuntimeException("Time out waiting to lock camera opening.");
                 }
-
                 // Choose the sizes for camera preview and video recording
                 CameraCharacteristics characteristics = mCameraManager.getCameraCharacteristics(mCameraID);
+                initFPS(characteristics);
                 StreamConfigurationMap map = characteristics
                         .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
                 mSensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
@@ -1089,7 +1096,7 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     mTextureView.setAspectRatio(getUIAspectRatio());//mPreviewSize.getHeight(), mPreviewSize.getWidth());
                 }
-                configureTransform(width, height);
+                configureTransform(mVideoSize.getWidth(), mVideoSize.getHeight());
                 mMediaRecorder = new MediaRecorder();
                 mCameraManager.openCamera(mCameraID, mStateCallback, null);
             } catch (CameraAccessException e) {
@@ -1128,7 +1135,7 @@ public class MainActivity extends AppCompatActivity {
             try {
                 // Получениe характеристик камеры
                 CameraCharacteristics characteristics = manager.getCameraCharacteristics(mCameraID);
-
+                initFPS(characteristics);
                 //осветление/затемнение изображения камеры
                 Range<Integer> range = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
                 //double exposureCompensationSteps = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP).doubleValue();
@@ -1172,6 +1179,7 @@ public class MainActivity extends AppCompatActivity {
                 mPreviewSize = chooseOptimalVideoSize(map.getOutputSizes(SurfaceTexture.class),
                         width, height, mVideoSize);
 
+                configureTransform(mVideoSize.getWidth(), mVideoSize.getHeight());
 
                 int orientation = getResources().getConfiguration().orientation;
                 if (orientation == Configuration.ORIENTATION_LANDSCAPE) {
@@ -1302,6 +1310,7 @@ public class MainActivity extends AppCompatActivity {
             return getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
         }
 
+
         public void createCameraPreviewSession() {
             try {
                 SurfaceTexture texture = mTextureView.getSurfaceTexture();
@@ -1315,6 +1324,11 @@ public class MainActivity extends AppCompatActivity {
 
                 mPreviewRequestBuilder =
                         mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+
+
+                if(fpsRange != null) {
+                    mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
+                }
                 mPreviewRequestBuilder.addTarget(surface);
 
 
@@ -1378,6 +1392,9 @@ public class MainActivity extends AppCompatActivity {
                                     // Flash is automatically enabled when necessary.
                                     //setAutoFlash(mPreviewRequestBuilder);
 
+                                    if(fpsRange != null) {
+                                        mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
+                                    }
                                     // Finally, we start displaying the camera preview.
                                     mPreviewRequest = mPreviewRequestBuilder.build();
                                     mCaptureSession.setRepeatingRequest(mPreviewRequest,
@@ -1402,6 +1419,52 @@ public class MainActivity extends AppCompatActivity {
             }
 
         }
+        public Range<Integer> fpsRange;
+
+        private void initFPS(CameraCharacteristics cameraCharacteristics){
+            try {
+                final int MIN_FPS_RANGE    = 0;
+                final int MAX_FPS_RANGE    = 30;
+
+                final Range<Integer>[] rangeList = cameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+
+                if ((rangeList == null) || (rangeList.length == 0)) {
+                    Log.e("Camera", "Failed to get FPS ranges.");
+                }
+
+                Range<Integer> result = null;
+
+                for (final Range<Integer> entry : rangeList) {
+                    int candidateLower = entry.getLower();
+                    int candidateUpper = entry.getUpper();
+
+                    if (candidateUpper > 1000) {
+                        Log.w("Camera","Device uses FPS range in a 1000 scale. Normalizing.");
+                        candidateLower /= 1000;
+                        candidateUpper /= 1000;
+                    }
+
+                    // Discard candidates with equal or out of range bounds
+                    final boolean discard = (candidateLower == candidateUpper)
+                            || (candidateLower < MIN_FPS_RANGE)
+                            || (candidateUpper > MAX_FPS_RANGE);
+
+                    if (discard == false) {
+                        // Update if none resolved yet, or the candidate
+                        // has a >= upper bound and spread than the current result
+                        final boolean update = (result == null)
+                                || ((candidateUpper >= result.getUpper()) && ((candidateUpper - candidateLower) >= (result.getUpper() - result.getLower())));
+
+                        if (update == true) {
+                            fpsRange = Range.create(candidateLower, candidateUpper);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            Log.i("Camera", "[FPS Range] is:" + fpsRange);
+        }
 
 
         public boolean isOpen() {
@@ -1419,7 +1482,7 @@ public class MainActivity extends AppCompatActivity {
             }
 
             setUpCameraOutputs(width, height);
-            configureTransform(width, height);
+//            configureTransform(width, height);
 
             try {
 //                if (!mCameraOpenCloseLock.tryAcquire(3000, TimeUnit.MILLISECONDS)) {
@@ -1479,7 +1542,7 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
 
         if (mTextureView.isAvailable()) {
-            openCamera();
+            openCamera(mTextureView.getWidth(), mTextureView.getHeight());
         } else {
             mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
         }
